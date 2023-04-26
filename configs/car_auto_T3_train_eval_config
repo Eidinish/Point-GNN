@@ -9,5 +9,5 @@
     "gpu_memusage": -1,
     "max_step": 1400170,
     "train_dir": "./checkpoints/car_auto_T3_train",
-    "visualization": false
+    "visualization": true
 }

@@ -5,10 +5,12 @@ import time
 import argparse
 import copy
 from sys import getsizeof
+from sys import exit
 from multiprocessing import Pool, Queue, Process
 
 import numpy as np
 import tensorflow as tf
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 from dataset.kitti_dataset import KittiDataset
 from models.graph_gen import get_graph_generate_fn
@@ -615,6 +617,10 @@ with tf.Session(graph=graph,
             results['loc_loss_cls_%d_box_%d'%(class_idx, 6)]),
             )
 
+        if np.isnan(results['total_loss']):
+            print('total loss is nan')
+            exit(0)
+        
         # add summaries ====================================================
         for key in metrics_update_ops:
             write_summary_scale(key, results[key], results['step'],

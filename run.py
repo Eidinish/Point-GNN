@@ -8,6 +8,7 @@ from functools import partial
 
 import numpy as np
 import tensorflow as tf
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 import open3d
 import cv2
 from tqdm import tqdm

@@ -5,6 +5,7 @@ import random
 
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
+from sklearn.neighbors import KDTree
 import open3d
 import tensorflow as tf
 
@@ -152,6 +153,172 @@ def multi_layer_downsampling_random(points_xyz, base_voxel_size, levels=[1],
 
     return vertex_coord_list, keypoint_indices_list
 
+
+def multi_layer_fps_sampling(points_xyz, num_samples, levels=[1]):
+
+    """Downsample the points at different scales by farthest point sampling
+
+    Args:
+        points_xyz: a [N, D] matrix. N is the total number of the points. D is
+        the dimension of the coordinates.
+        num_samples: the number of downsampled points.
+        level_configs: a dict of 'level', 'graph_gen_method',
+        'graph_gen_kwargs', 'graph_scale'.
+
+    returns: vertex_coord_list, keypoint_indices_list
+    """
+    vertex_coord_list = [points_xyz]
+    keypoint_indices_list = []
+    last_level = 0
+    for level in levels:
+        last_points_xyz = vertex_coord_list[-1]
+        if np.isclose(last_level, level):
+            # same downsample scale (gnn layer), just copy it
+            vertex_coord_list.append(np.copy(last_points_xyz))
+            keypoint_indices_list.append(
+                np.expand_dims(np.arange(len(last_points_xyz)), axis=1))
+        else:
+            N = points_xyz.shape[0]
+            samples = []
+            sample_index = []
+            distance = np.full((N, ), np.inf)
+            farthest = np.random.randint(0, N)
+            for i in range(num_samples):
+                samples.append(points_xyz[farthest])
+                sample_index.append(farthest)
+                dist_i = np.sum((points_xyz - points_xyz[farthest])**2, axis=1)
+                distance = np.minimum(distance, dist_i)
+                farthest = np.argmax(distance)
+            vertex_coord_list.append(np.array(samples))
+            keypoint_indices_list.append(
+                np.expand_dims(np.array(sample_index),axis=1))
+        last_level = level
+   
+    return vertex_coord_list, keypoint_indices_list
+
+def multi_layer_kdtree_fps_sampling(points_xyz, num_samples, levels=[1]):
+
+    """Downsample the points at different scales by farthest point sampling optimized using kdtree
+
+    Args:
+        points_xyz: a [N, D] matrix. N is the total number of the points. D is
+        the dimension of the coordinates.
+        num_samples: the number of downsampled points.
+        level_configs: a dict of 'level', 'graph_gen_method',
+        'graph_gen_kwargs', 'graph_scale'.
+
+    returns: vertex_coord_list, keypoint_indices_list
+    """
+    vertex_coord_list = [points_xyz]
+    keypoint_indices_list = []
+    last_level = 0
+    for level in levels:
+        last_points_xyz = vertex_coord_list[-1]
+        if np.isclose(last_level, level):
+            # same downsample scale (gnn layer), just copy it
+            vertex_coord_list.append(np.copy(last_points_xyz))
+            keypoint_indices_list.append(
+                np.expand_dims(np.arange(len(last_points_xyz)), axis=1))
+        else:
+            N = points_xyz.shape[0]
+            samples = []
+            sample_index = []
+            distance = np.full((N, ), np.inf)
+            farthest = np.random.randint(0, N)
+            samples.append(points_xyz[farthest])
+            sample_index.append(farthest)
+            
+            for i in range(num_samples-1):
+                tree = KDTree(np.array(samples))
+                dist, ind = tree.query(points_xyz, k=1)
+                distance = np.minimum(distance, dist.reshape(-1))
+                farthest = np.argmax(distance)
+                samples.append(points_xyz[farthest])
+                sample_index.append(farthest)
+            
+            vertex_coord_list.append(np.array(samples))
+            keypoint_indices_list.append(
+                np.expand_dims(np.array(sample_index),axis=1))
+        last_level = level
+   
+    return vertex_coord_list, keypoint_indices_list
+
+def compute_curvature(points, neighbors, radius):
+    """
+    计算曲率
+    Args:
+        points: 点云数据，类型为numpy.ndarray，shape为(n, 3)
+        neighbors: 每个点的邻居点索引，类型为numpy.ndarray，shape为(n, k)
+        radius: 邻居点搜索半径
+
+    Returns:
+        curvature: 点的曲率，类型为numpy.ndarray，shape为(n,)
+    """
+    curvature = np.zeros(points.shape[0])
+
+    for i, p in enumerate(points):
+        if len(neighbors[i]) < 3:
+            continue
+        indices = neighbors[i]
+
+        # 计算点p的协方差矩阵
+        cov = np.cov(points[indices].T)
+
+        # 获取协方差矩阵的特征向量和特征值
+        eigvals, eigvecs = np.linalg.eig(cov)
+
+        # 根据曲率下降的程度判断是否为关键点
+        curvature[i] = 1 - (eigvals[1] / eigvals[0])
+
+    return curvature
+
+def curvature_sampling(points, radius, k=6, ratio=0.4, levels=[1]):
+    """
+    曲率下采样方法
+    Args:
+        points: 点云数据,类型为numpy.ndarray,shape为(n, 3)
+        radius: 邻居点搜索半径
+        k: 邻居点数目
+        ratio: 下采样比例
+
+    Returns:
+        vertex_coord_list, keypoint_indices_list
+    """
+
+    vertex_coord_list = [points]
+    keypoint_indices_list = []
+    last_level = 0
+    for level in levels:
+        last_points_xyz = vertex_coord_list[-1]
+        if np.isclose(last_level, level):
+            # same downsample scale (gnn layer), just copy it
+            vertex_coord_list.append(np.copy(last_points_xyz))
+            keypoint_indices_list.append(
+                np.expand_dims(np.arange(len(last_points_xyz)), axis=1))
+        else:
+            # 计算每个点的邻居点
+            tree = KDTree(points)
+            _, indices = tree.query(points, k=k)
+            neighbors = np.array(indices)
+
+            # 计算每个点的曲率
+            curvature = compute_curvature(points, neighbors, radius)
+
+            # 计算曲率的阈值，确定关键点
+            t = np.percentile(curvature, (1 - ratio) * 100)
+            key_points = np.where(curvature < t)[0]
+
+            # 保留关键点的位置
+            sub_points = points[key_points]
+            sub_indices = key_points.tolist()
+            
+            vertex_coord_list.append(np.array(sub_points))
+            keypoint_indices_list.append(
+                np.expand_dims(np.array(sub_indices),axis=1))
+        last_level = level
+   
+    return vertex_coord_list, keypoint_indices_list
+
 def gen_multi_level_local_graph_v3(
     points_xyz, base_voxel_size, level_configs, add_rnd3d=False,
     downsample_method='center'):
@@ -182,6 +349,17 @@ def gen_multi_level_local_graph_v3(
         vertex_coord_list, keypoint_indices_list = \
             multi_layer_downsampling_random(
                 points_xyz, base_voxel_size, scales, add_rnd3d=add_rnd3d)
+    if downsample_method=='fps':
+        vertex_coord_list, keypoint_indices_list = \
+            multi_layer_fps_sampling(points_xyz, 2000, scales)
+    if downsample_method=='curve':
+        vertex_coord_list, keypoint_indices_list = \
+            curvature_sampling(points_xyz, 0.8, 10, 0.2, scales)
+                
+    # print('vertex_coord_list:')
+    # print(len(vertex_coord_list[0]),len(vertex_coord_list[1]),len(vertex_coord_list[2]))
+    # print('keypoint_indices_list:')
+    # print(len(keypoint_indices_list[0]),len(keypoint_indices_list[1]))
     # Create edges
     edges_list = []
     for config in level_configs:
@@ -212,6 +390,7 @@ def gen_disjointed_rnn_local_graph_v3(
             indices = [neighbors if neighbors.size <= num_neighbors else
                 np.random.choice(neighbors, num_neighbors, replace=False)
                 for neighbors in indices]
+            
     vertices_v = np.concatenate(indices)
     vertices_i = np.concatenate(
         [i*np.ones(neighbors.size, dtype=np.int32)

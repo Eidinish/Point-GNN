@@ -1,10 +1,12 @@
 """This file defines classes for the graph neural network. """
 
 from functools import partial
+from tensorflow.contrib.layers import fully_connected, xavier_initializer, l2_regularizer
 
 import tensorflow as tf
 import numpy as np
 import tensorflow.contrib.slim as slim
+import math
 
 def instance_normalization(features):
     with tf.variable_scope(None, default_name='IN'):
@@ -103,6 +105,30 @@ def multi_layer_neural_network_fn(features, Ks=(64, 32, 64), is_logits=False,
                 normalizer_fn=normalization_fn_dict[normalization_type])
     return features
 
+def attention_mechanism_fn(point_features, num_centers, activation_fn=tf.nn.elu, initializer=tf.contrib.layers.xavier_initializer()):
+        """ Define the attention mechanism to calculate attention coefficients.
+
+        Args:
+            point_features: a [N, F] tensor. N is the total number of edges. F is the dimension of point_features.
+            num_centers: an integer. The number of nodes in the previous layer.
+            activation_fn: activation function.
+            initializer: initializer function.
+
+        returns: a [N, num_centers] tensor with attention coefficients.
+        """
+        F = point_features.get_shape().as_list()[-1]
+        w = tf.get_variable('W', shape=[F, F // 8], initializer=initializer)
+        w_c = tf.get_variable('W_c', shape=[F // 8, num_centers], initializer=initializer)
+        attention_weights = tf.matmul(point_features, w)
+        attention_weights_a = tf.expand_dims(attention_weights, axis=1)
+        attention_weights_a = tf.tile(attention_weights_a, multiples=[1, num_centers ,1])
+        attention_weights_b = tf.matmul(tf.reshape(point_features, shape=[-1, F // 8]), w_c)
+        attention_weights_b = tf.reshape(attention_weights_b, [-1, 1, num_centers])
+        attention_weights = tf.matmul(tf.nn.tanh(attention_weights_a + attention_weights_b), tf.ones(shape=[num_centers, 1]))
+        attention_weights = tf.nn.softmax(tf.nn.leaky_relu(attention_weights))
+        attention_weights = tf.transpose(attention_weights, [1, 0])
+        return attention_weights
+
 def graph_scatter_max_fn(point_features, point_centers, num_centers):
     aggregated = tf.math.unsorted_segment_max(point_features,
         point_centers, num_centers, name='scatter_max')
@@ -117,6 +143,12 @@ def graph_scatter_mean_fn(point_features, point_centers, num_centers):
     aggregated = tf.math.unsorted_segment_mean(point_features,
         point_centers, num_centers, name='scatter_mean')
     return aggregated
+
+def graph_scatter_attention_fn(point_features, point_centers, num_centers):
+        attention_weights = attention_mechanism_fn(point_features, num_centers)
+        aggregated = tf.math.unsorted_segment_sum(point_features * attention_weights,
+                                                  point_centers, num_centers, name='scatter_attention')
+        return aggregated
 
 class ClassAwarePredictor(object):
     """A class to predict 3D bounding boxes and class labels."""
@@ -294,6 +326,249 @@ class GraphNetAutoCenter(object):
         self._aggregation_fn = aggregation_fn
         self._update_fn = update_fn
         self._auto_offset_fn = auto_offset_fn
+
+    def apply_regular(self,
+        input_vertex_features,
+        input_vertex_coordinates,
+        NOT_USED,
+        edges,
+        edge_MLP_depth_list=None,
+        edge_MLP_normalization_type='fused_BN_center',
+        edge_MLP_activation_type = 'ReLU',
+        update_MLP_depth_list=None,
+        update_MLP_normalization_type='fused_BN_center',
+        update_MLP_activation_type = 'ReLU',
+        auto_offset=False,
+        auto_offset_MLP_depth_list=None,
+        auto_offset_MLP_normalization_type='fused_BN_center',
+        auto_offset_MLP_feature_activation_type = 'ReLU',
+        ):
+        """apply one layer graph network on a graph. .
+
+        Args:
+            input_vertex_features: a [N, M] tensor. N is the number of vertices.
+            M is the length of the features.
+            input_vertex_coordinates: a [N, D] tensor. N is the number of
+            vertices. D is the dimension of the coordinates.
+            NOT_USED: leave it here for API compatibility.
+            edges: a [K, 2] tensor. K pairs of (src, dest) vertex indices.
+            edge_MLP_depth_list: a list of MLP units to extract edge features.
+            edge_MLP_normalization_type: the normalization function of MLP.
+            edge_MLP_activation_type: the activation function of MLP.
+            update_MLP_depth_list: a list of MLP units to extract update
+            features.
+            update_MLP_normalization_type: the normalization function of MLP.
+            update_MLP_activation_type: the activation function of MLP.
+            auto_offset: boolean, use auto registration or not.
+            auto_offset_MLP_depth_list: a list of MLP units to compute offset.
+            auto_offset_MLP_normalization_type: the normalization function.
+            auto_offset_MLP_feature_activation_type: the activation function.
+
+        returns: a [N, M] tensor. Updated vertex features.
+        """
+        # Gather the source vertex of the edges
+        s_vertex_features = tf.gather(input_vertex_features, edges[:,0])
+        s_vertex_coordinates = tf.gather(input_vertex_coordinates, edges[:,0])
+        # [optional] Compute the coordinates offset
+        if auto_offset:
+            offset = self._auto_offset_fn(input_vertex_features,
+                Ks=auto_offset_MLP_depth_list, is_logits=True,
+                normalization_type=auto_offset_MLP_normalization_type,
+                activation_type=auto_offset_MLP_feature_activation_type)
+            input_vertex_coordinates = input_vertex_coordinates + offset
+        # Gather the destination vertex of the edges
+        d_vertex_coordinates = tf.gather(input_vertex_coordinates, edges[:, 1])
+        # Prepare initial edge features
+        edge_features = tf.concat(
+            [s_vertex_features, s_vertex_coordinates - d_vertex_coordinates],
+             axis=-1)
+        with tf.variable_scope('extract_vertex_features'):
+            # Extract edge features
+            edge_features = self._edge_feature_fn(
+                edge_features,
+                Ks=edge_MLP_depth_list,
+                is_logits=False,
+                normalization_type=edge_MLP_normalization_type,
+                activation_type=edge_MLP_activation_type)
+            # Aggregate edge features
+            aggregated_edge_features = self._aggregation_fn(
+                edge_features,
+                edges[:, 1],
+                tf.shape(input_vertex_features)[0])
+        # Update vertex features
+        with tf.variable_scope('combined_features'):
+            update_features = self._update_fn(aggregated_edge_features,
+                Ks=update_MLP_depth_list, is_logits=True,
+                normalization_type=update_MLP_normalization_type,
+                activation_type=update_MLP_activation_type)
+        output_vertex_features = update_features + input_vertex_features
+        return output_vertex_features
+
+class GraphNetAttentionCenter1(object):
+    """A class to implement point graph netural network layer."""
+
+    def __init__(self,
+        edge_feature_fn=multi_layer_neural_network_fn,
+        aggregation_fn=graph_scatter_max_fn,
+        update_fn=multi_layer_neural_network_fn,
+        auto_offset_fn=multi_layer_neural_network_fn):
+        self._edge_feature_fn = edge_feature_fn
+        self._aggregation_fn = aggregation_fn
+        self._update_fn = update_fn
+        self._auto_offset_fn = auto_offset_fn
+
+    def apply_regular(self,
+        input_vertex_features,
+        input_vertex_coordinates,
+        NOT_USED,
+        edges,
+        edge_MLP_depth_list=None,
+        edge_MLP_normalization_type='fused_BN_center',
+        edge_MLP_activation_type = 'ReLU',
+        update_MLP_depth_list=None,
+        update_MLP_normalization_type='fused_BN_center',
+        update_MLP_activation_type = 'ReLU',
+        auto_offset=False,
+        auto_offset_MLP_depth_list=None,
+        auto_offset_MLP_normalization_type='fused_BN_center',
+        auto_offset_MLP_feature_activation_type = 'ReLU',
+        ):
+        """apply one layer graph network on a graph. .
+
+        Args:
+            input_vertex_features: a [N, M] tensor. N is the number of vertices.
+            M is the length of the features.
+            input_vertex_coordinates: a [N, D] tensor. N is the number of
+            vertices. D is the dimension of the coordinates.
+            NOT_USED: leave it here for API compatibility.
+            edges: a [K, 2] tensor. K pairs of (src, dest) vertex indices.
+            edge_MLP_depth_list: a list of MLP units to extract edge features.
+            edge_MLP_normalization_type: the normalization function of MLP.
+            edge_MLP_activation_type: the activation function of MLP.
+            update_MLP_depth_list: a list of MLP units to extract update
+            features.
+            update_MLP_normalization_type: the normalization function of MLP.
+            update_MLP_activation_type: the activation function of MLP.
+            auto_offset: boolean, use auto registration or not.
+            auto_offset_MLP_depth_list: a list of MLP units to compute offset.
+            auto_offset_MLP_normalization_type: the normalization function.
+            auto_offset_MLP_feature_activation_type: the activation function.
+
+        returns: a [N, M] tensor. Updated vertex features.
+        """
+        # Gather the source vertex of the edges
+        s_vertex_features = tf.gather(input_vertex_features, edges[:,0])
+        s_vertex_coordinates = tf.gather(input_vertex_coordinates, edges[:,0])
+        # [optional] Compute the coordinates offset
+        if auto_offset:
+            offset = self._auto_offset_fn(input_vertex_features,
+                Ks=auto_offset_MLP_depth_list, is_logits=True,
+                normalization_type=auto_offset_MLP_normalization_type,
+                activation_type=auto_offset_MLP_feature_activation_type)
+            input_vertex_coordinates = input_vertex_coordinates + offset
+        # Gather the destination vertex of the edges
+        d_vertex_coordinates = tf.gather(input_vertex_coordinates, edges[:, 1])
+        # Prepare initial edge features
+        edge_features = tf.concat(
+            [s_vertex_features, s_vertex_coordinates - d_vertex_coordinates],
+             axis=-1)
+        with tf.variable_scope('extract_vertex_features'):
+            # Extract edge features
+            edge_features = self._edge_feature_fn(
+                edge_features,
+                Ks=edge_MLP_depth_list,
+                is_logits=False,
+                normalization_type=edge_MLP_normalization_type,
+                activation_type=edge_MLP_activation_type)
+            # Compute attention weights for each center
+            center_features = tf.gather(input_vertex_features, edges[:, 1])
+            attention_feats = tf.concat(
+                [center_features, d_vertex_coordinates - s_vertex_coordinates],
+                axis=-1 )
+            attention_weights = graph_attention_fn(
+                attention_feats, s_vertex_features, d_vertex_coordinates)
+            attention_weights = tf.maximum(attention_weights, 1e-6)
+            attention_weights = attention_weights / tf.reduce_sum(attention_weights,
+                axis=1, keepdims=True)
+            # Aggregate edge features with attention weights
+            aggregated_edge_features = self._aggregation_fn(
+                edge_features*attention_weights[:, :, None],
+                edges[:, 1],
+                tf.shape(input_vertex_features)[0])
+        # Update vertex features
+        with tf.variable_scope('combined_features'):
+            update_features = self._update_fn(aggregated_edge_features,
+                Ks=update_MLP_depth_list, is_logits=True,
+                normalization_type=update_MLP_normalization_type,
+                activation_type=update_MLP_activation_type)
+        output_vertex_features = update_features + input_vertex_features
+        return output_vertex_features
+
+def graph_attention_fn(center_feats, neighbor_feats, neighbor_coords,
+                       num_heads=1, attn_depth=32):
+    """Graph attention function to compute non-parametric attention weights.
+
+    Args:
+        center_feats: a [batch_size, max_num_centers, feature_size] tensor.
+        neighbor_feats: a [batch_size, max_num_neighbors, feature_size] tensor.
+        neighbor_coords: a [batch_size, max_num_neighbors, num_dims] tensor.
+        num_heads: number of attention heads.
+        attn_depth: depth of the attention function.
+
+    Returns:
+        a [batch_size, max_num_centers, max_num_neighbors] tensor containing the
+        attention weights for each center with respect to each neighbor.
+    """
+    batch_size, max_num_centers, feature_size = center_feats.get_shape().as_list()
+    _, max_num_neighbors, _ = neighbor_feats.get_shape().as_list()
+
+    query = tf.tile(center_feats, [1, 1, max_num_neighbors])
+    key = tf.reshape(tf.tile(neighbor_feats, [1, max_num_centers, 1]),
+                      [batch_size, max_num_centers*max_num_neighbors, feature_size])
+    value = key
+
+    # Attention function
+    attn_weights = tf.matmul(query, key, transpose_b=True)
+    attn_weights /= math.sqrt(float(feature_size))
+
+    # Neighbor positions
+    coord_query = tf.tile(center_feats[:, :, :3], [1, 1, max_num_neighbors])
+    coord_key = tf.reshape(tf.tile(neighbor_coords, [1, max_num_centers, 1]),
+                            [batch_size, max_num_centers*max_num_neighbors, -1])
+    coord_diff = coord_query - coord_key
+    attn_weights_coord = tf.matmul(coord_query, coord_key, transpose_b=True)
+    attn_weights_coord /= math.sqrt(float(3))
+    attn_weights += attn_weights_coord
+
+    # Attention heads
+    attn_weights = tf.split(attn_weights, num_heads, axis=-1)
+    value = tf.split(value, num_heads, axis=-1)
+    att_heads = []
+    for i in range(num_heads):
+        head_weights = tf.nn.softmax(attn_weights[i], axis=-1)
+        head_weights = tf.reshape(head_weights, [batch_size, max_num_centers, max_num_neighbors])
+        head_values = tf.reshape(value[i], [batch_size, max_num_centers, max_num_neighbors, attn_depth])
+        head_values = head_weights[:, :, :, None] * head_values
+        head_values = tf.reduce_sum(head_values, axis=-2)
+        att_heads.append(head_values)
+    attn_out = tf.concat(att_heads, axis=-1)
+
+    return attn_out
+
+class GraphNetAttentionCenter2(object):
+    """A class to implement point graph netural network layer."""
+
+    def __init__(self,
+            edge_feature_fn=multi_layer_neural_network_fn,
+            attention_mechanism_fn=attention_mechanism_fn,
+            aggregation_fn=graph_scatter_attention_fn,
+            update_fn=multi_layer_neural_network_fn,
+            auto_offset_fn=multi_layer_neural_network_fn):
+            self._edge_feature_fn = edge_feature_fn
+            self._attention_mechanism_fn = attention_mechanism_fn
+            self._aggregation_fn = aggregation_fn
+            self._update_fn = update_fn
+            self._auto_offset_fn = auto_offset_fn
 
     def apply_regular(self,
         input_vertex_features,

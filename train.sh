@@ -1,0 +1,1 @@
+nohup python -u train.py configs/car_auto_T3_train_train_config configs/car_auto_T3_train_config > train.log 2>&1 &
