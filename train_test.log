@@ -1,0 +1,38 @@
+@ level 0 Graph, Add layer: layer1, type: scatter_max_point_set_pooling
+Feature Dim:300
+@ level 1 Graph, Add layer: layer2, type: scatter_max_graph_auto_center_net
+Tensor("layer2/Softmax:0", shape=(?, 300), dtype=float32, device=/device:GPU:0)
+Tensor("layer2/concat:0", shape=(?, 303), dtype=float32, device=/device:GPU:0)
+Traceback (most recent call last):
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/framework/ops.py", line 1607, in _create_c_op
+    c_op = c_api.TF_FinishOperation(op_desc)
+tensorflow.python.framework.errors_impl.InvalidArgumentError: Dimensions must be equal, but are 300 and 303 for 'layer2/Mul' (op: 'Mul') with input shapes: [?,300], [?,303].
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "train.py", line 232, in <module>
+    t_keypoint_indices_list, t_edges_list, t_is_training)
+  File "/home/zllee/gnn/Point-GNN/models/models.py", line 174, in predict
+    **layer_kwargs)
+  File "/home/zllee/gnn/Point-GNN/models/gnn.py", line 794, in apply_regular
+    edge_features = tf.multiply(attention_coeffs, edge_features)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/util/dispatch.py", line 180, in wrapper
+    return target(*args, **kwargs)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/ops/math_ops.py", line 331, in multiply
+    return gen_math_ops.mul(x, y, name)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/ops/gen_math_ops.py", line 6701, in mul
+    "Mul", x=x, y=y, name=name)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/framework/op_def_library.py", line 794, in _apply_op_helper
+    op_def=op_def)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/util/deprecation.py", line 507, in new_func
+    return func(*args, **kwargs)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/framework/ops.py", line 3357, in create_op
+    attrs, op_def, compute_device)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/framework/ops.py", line 3426, in _create_op_internal
+    op_def=op_def)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/framework/ops.py", line 1770, in __init__
+    control_input_ops)
+  File "/home/zllee/.local/lib/python3.6/site-packages/tensorflow_core/python/framework/ops.py", line 1610, in _create_c_op
+    raise ValueError(str(e))
+ValueError: Dimensions must be equal, but are 300 and 303 for 'layer2/Mul' (op: 'Mul') with input shapes: [?,300], [?,303].

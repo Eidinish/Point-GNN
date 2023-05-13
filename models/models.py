@@ -51,12 +51,41 @@ class MultiLayerFastLocalGraphModelV2(object):
                 aggregation_fn=gnn.graph_scatter_max_fn,
                 output_fn=gnn.multi_layer_neural_network_fn
                 ),
+
+            # no attention 
             'scatter_max_graph_auto_center_net': gnn.GraphNetAutoCenter(
                 edge_feature_fn=gnn.multi_layer_neural_network_fn,
                 aggregation_fn=gnn.graph_scatter_max_fn,
                 update_fn=gnn.multi_layer_neural_network_fn,
                 auto_offset_fn=gnn.multi_layer_neural_network_fn,
                 ),
+
+            # attention 1
+            # 'scatter_max_graph_auto_center_net': gnn.GraphNetAttentionCenter1(
+            #     edge_feature_fn=gnn.multi_layer_neural_network_fn,
+            #     aggregation_fn=gnn.graph_scatter_max_fn,
+            #     update_fn=gnn.multi_layer_neural_network_fn,
+            #     auto_offset_fn=gnn.multi_layer_neural_network_fn,
+            #     ),
+
+            # # Attention 2
+            # 'scatter_max_graph_auto_center_net': gnn.GraphNetAttentionCenter2(
+            #     edge_feature_fn=gnn.multi_layer_neural_network_fn,
+            #     attention_mechanism_fn=gnn.attention_mechanism_fn,
+            #     aggregation_fn=gnn.graph_scatter_attention_fn,
+            #     update_fn=gnn.multi_layer_neural_network_fn,
+            #     auto_offset_fn=gnn.multi_layer_neural_network_fn,
+            #     ),
+
+            # attention 
+            # 'scatter_max_graph_auto_center_net': gnn.GraphNetAttCenter(
+            #     edge_feature_fn=gnn.multi_layer_neural_network_fn,
+            #     attention_feature_fn=gnn.multi_layer_neural_network_fn,
+            #     aggregation_fn=gnn.graph_scatter_sum_fn,
+            #     update_fn=gnn.multi_layer_neural_network_fn,
+            #     auto_offset_fn=gnn.multi_layer_neural_network_fn,
+            #     ),
+
             'classaware_predictor': gnn.ClassAwarePredictor(
                 cls_fn=partial(gnn.multi_layer_fc_fn, Ks=(64,), num_layer=2),
                 loc_fn=partial(gnn.multi_layer_fc_fn,

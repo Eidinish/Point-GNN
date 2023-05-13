@@ -247,12 +247,12 @@ def compute_curvature(points, neighbors, radius):
     """
     计算曲率
     Args:
-        points: 点云数据，类型为numpy.ndarray，shape为(n, 3)
-        neighbors: 每个点的邻居点索引，类型为numpy.ndarray，shape为(n, k)
+        points: 点云数据,类型为numpy.ndarray,shape为(n, 3)
+        neighbors: 每个点的邻居点索引,类型为numpy.ndarray,shape为(n, k)
         radius: 邻居点搜索半径
 
     Returns:
-        curvature: 点的曲率，类型为numpy.ndarray，shape为(n,)
+        curvature: 点的曲率,类型为numpy.ndarray,shape为(n,)
     """
     curvature = np.zeros(points.shape[0])
 
@@ -351,7 +351,7 @@ def gen_multi_level_local_graph_v3(
                 points_xyz, base_voxel_size, scales, add_rnd3d=add_rnd3d)
     if downsample_method=='fps':
         vertex_coord_list, keypoint_indices_list = \
-            multi_layer_fps_sampling(points_xyz, 2000, scales)
+            multi_layer_fps_sampling(points_xyz, 1000, scales)
     if downsample_method=='curve':
         vertex_coord_list, keypoint_indices_list = \
             curvature_sampling(points_xyz, 0.8, 10, 0.2, scales)

@@ -58,7 +58,7 @@
     "optimizer_kwargs": {},
     "save_every_epoch": 20,
     "train_dataset": "train_car.txt",
-    "train_dir": "./checkpoints/car_auto_T3_fps_train",
+    "train_dir": "./checkpoints/car_auto_T3_random0.005",
     "unify_copies": true,
     "visualization": false
 }

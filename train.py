@@ -50,6 +50,8 @@ if 'train' in config_complete:
     config = config_complete['train']
 else:
     config = config_complete
+
+# keras.backend.clear_session()
 # input function ==============================================================
 dataset = KittiDataset(
     os.path.join(DATASET_DIR, 'image/training/image_2'),
